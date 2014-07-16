@@ -104,9 +104,9 @@ if $BUILD_BINUTILS; then
     cd $BUILD/binutils
     if [ $REBUILD -eq 1 ] || [ ! -f $BUILD/binutils/Makefile ]; then
         if [ "$ARCH" = "x86_32" ]; then
-            $SRC/binutils/configure --target=$TARGET --prefix=$PREFIX --disable-nls
+            $SRC/binutils/configure --target=$TARGET --prefix=$PREFIX --disable-nls --disable-werror
         else
-            $SRC/binutils/configure --target=$TARGET --prefix=$PREFIX --disable-nls --enable-64-bit-bfd
+            $SRC/binutils/configure --target=$TARGET --prefix=$PREFIX --disable-nls --enable-64-bit-bfd --disable-werror
         fi
         if [ $? -ne 0 ]; then
             exit 1

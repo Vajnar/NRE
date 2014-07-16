@@ -1,3 +1,40 @@
+diff -rcN src/binutils/bfd/doc/bfd.texinfo.bak src/binutils/bfd/doc/bfd.texinfo
+*** src/binutils/bfd/doc/bfd.texinfo.bak     2014-07-10 01:59:42.883584047 +0200
+--- src/binutils/bfd/doc/bfd.texinfo 2014-07-10 01:59:49.827111218 +0200
+***************
+*** 322,328 ****
+  @printindex cp
+
+  @tex
+! % I think something like @colophon should be in texinfo.  In the
+  % meantime:
+  \long\def\colophon{\hbox to0pt{}\vfill
+  \centerline{The body of this manual is set in}
+--- 322,328 ----
+  @printindex cp
+
+  @tex
+! % I think something like @@colophon should be in texinfo.  In the
+  % meantime:
+  \long\def\colophon{\hbox to0pt{}\vfill
+  \centerline{The body of this manual is set in}
+***************
+*** 333,339 ****
+  \centerline{{\sl\fontname\tensl\/}}
+  \centerline{are used for emphasis.}\vfill}
+  \page\colophon
+! % Blame: doc@cygnus.com, 28mar91.
+  @end tex
+
+  @bye
+--- 333,339 ----
+  \centerline{{\sl\fontname\tensl\/}}
+  \centerline{are used for emphasis.}\vfill}
+  \page\colophon
+! % Blame: doc@@cygnus.com, 28mar91.
+  @end tex
+
+  @bye
 diff -rcN src/binutils-2.23.2/bfd/config.bfd src/binutils/bfd/config.bfd
 *** src/binutils-2.23.2/bfd/config.bfd	2012-09-04 16:14:59.000000000 +0200
 --- src/binutils/bfd/config.bfd	2013-08-03 08:47:14.775899319 +0200
