@@ -1,293 +1,71 @@
-/*
- * Copyright (C) 2012, Nils Asmussen <nils@os.inf.tu-dresden.de>
- * Economic rights: Technische Universitaet Dresden (Germany)
- *
- * This file is part of NRE (NOVA runtime environment).
- *
- * NRE is free software: you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * NRE is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
- * General Public License version 2 for more details.
- */
-
-#include <kobj/LocalThread.h>
 #include <kobj/GlobalThread.h>
-#include <kobj/Sc.h>
-#include <kobj/Sm.h>
-#include <kobj/Gsi.h>
-#include <ipc/ClientSession.h>
-#include <ipc/Consumer.h>
-#include <stream/OStringStream.h>
-#include <stream/VGAStream.h>
 #include <stream/Serial.h>
 #include <services/Console.h>
-#include <services/Keyboard.h>
-#include <services/Mouse.h>
-#include <services/ACPI.h>
-#include <services/Timer.h>
-#include <util/DMA.h>
-#include <util/Date.h>
-#include <bits/MaskField.h>
-#include <Exception.h>
+#include <stream/VGAStream.h>
+#include <util/Atomic.h>
+#include <CPU.h>
+#include <kobj/Sm.h>
+#include <kobj/Pt.h>
 
 using namespace nre;
 
-#if 0
-static void read(void *) {
-    while(1) {
-        Session conssess(*con);
-        DataSpace ds(100, DataSpaceDesc::ANONYMOUS, DataSpaceDesc::RW);
-        ds.share(conssess);
-        Consumer<int> c(&ds);
-        for(int x = 0; x < 100; ++x) {
-            int *i = c.get();
-            Serial::get().writef("[%p] Got %d\n", ds.virt(), *i);
-            c.next();
-        }
-    }
+typedef struct {
+  capsel_t sel;
+  int value;
+} sf;
+
+sf sm1, sm2;
+
+auto &ser = Serial::get();
+
+static void dummy(void*) {
+  sm1.sel = CapSelSpace::get().allocate();
+  Syscalls::create_sm(sm1.sel, 0, Pd::current()->sel());
+  
+  while(1) {
+    if(Atomic::add(&sm1.value, -1) <= 0)
+        Syscalls::sm_ctrl(sm1.sel, Syscalls::SM_DOWN);
+    
+    Serial::get() << "ping\n";
+    
+    if(Atomic::add(&sm2.value, 1) < 0)
+        Syscalls::sm_ctrl(sm2.sel, Syscalls::SM_UP);
+  }
 }
 
-static void write(void *) {
-    Session conssess(*con);
-    Pt &pt = conssess.pt(CPU::current().id);
-    DataSpace ds(100, DataSpaceDesc::ANONYMOUS, DataSpaceDesc::RW);
-    ds.share(conssess);
-    int *data = reinterpret_cast<int*>(ds.virt());
-    for(uint i = 0; i < 100; ++i) {
-        UtcbFrame uf;
-        *data = i;
-        //uf << i;
-        pt.call(uf);
-    }
+static void global_hello(void*) {
+  sm2.sel = CapSelSpace::get().allocate();
+  Syscalls::create_sm(sm2.sel, 1, Pd::current()->sel());
+  sm2.value = 1;
+  
+  while(1) {
+    if(Atomic::add(&sm2.value, -1) <= 0)
+        Syscalls::sm_ctrl(sm2.sel, Syscalls::SM_DOWN);
+    
+    Serial::get() << "pong\n";
+    
+    if(Atomic::add(&sm1.value, 1) < 0)
+        Syscalls::sm_ctrl(sm1.sel, Syscalls::SM_UP);
+  }
 }
 
-struct Info {
-    ConsoleSession *conssess;
-    int no;
-};
+int main(void) {
+//  ConsoleSession cons("console", 1, "DiskTest");
+//  s = new VGAStream(cons, 0);
+//  int i;
 
-static void reader(void*) {
-    Info *info = Thread::current()->get_tls<Info*>(Thread::TLS_PARAM);
-    while(1) {
-        Console::ReceivePacket *pk = info->conssess->consumer().get();
-        Serial::get().writef("%u: Got c=%#x kc=%#x, flags=%#x\n", info->no, pk->character, pk->keycode,
-                             pk->flags);
-        info->conssess->consumer().next();
-    }
-}
+//  s->clear(0);
+//  *s << "Nazdar, svete\n";
+//  *s >> i;
+//  *s << "Cislo: " << i << "\n";
+  
+  GlobalThread::create(dummy, CPU::current().log_id(), "ctrl_world")->start();
+  GlobalThread::create(global_hello, CPU::current().log_id(), "hello_world")->start();
 
-static void writer(void*) {
-    Info *info = Thread::current()->get_tls<Info*>(Thread::TLS_PARAM);
-    while(1) {
-        for(int y = 0; y < 25; y++) {
-            for(int x = 0; x < 80; x++) {
-                Console::SendPacket pk;
-                pk.x = x;
-                pk.y = y;
-                pk.character = 'A' + info->no;
-                pk.color = x % 8;
-                info->conssess->producer().produce(pk);
-            }
-        }
-    }
-}
-#endif
-
-static TimerSession *timer;
-static UserSm sm;
-
-static void view0(void*) {
-    char title[64];
-    size_t subcon = Thread::current()->get_tls<word_t>(Thread::TLS_PARAM);
-    OStringStream(title, sizeof(title)) << "Test-" << subcon;
-    ConsoleSession *conssess = new ConsoleSession("console", subcon, title);
-    VGAStream view(*conssess, 0);
-    int i = 0;
-    while(i < 10000) {
-        //char c = view.read();
-        view << "Huhu, from page " << view.page() << ": " << i << "\n";
-        i++;
-    }
-}
-
-static void tick_thread(void*) {
-    timevalue_t uptime, unixts;
-    int i = 0;
-    auto &ser = Serial::get();
-    while(1) {
-        timer->wait_for(Hip::get().freq_tsc * 1000);
-        timer->get_time(uptime, unixts);
-        ScopedLock<UserSm> guard(&sm);
-        ser << "CPU" << CPU::current().log_id() << ": ";
-        ser << ++i << " ticks, uptime=" << uptime << ", unixtime=" << unixts << ", ";
-        DateInfo date;
-        Date::gmtime(unixts / Timer::WALLCLOCK_FREQ, &date);
-        ser << "date: " << fmt(date.mday, "0", 2) << "." << fmt(date.mon, "0", 2) << "."
-            << fmt(date.year, "0", 4) << " " << date.hour << ":" << fmt(date.min, "0", 2) << ":"
-            << fmt(date.sec, "0", 2) << "\n";
-    }
-}
-
-int main() {
-    auto &ser = Serial::get();
-
-#if 0
-    try {
-        VTHROW(Exception, E_EXISTS, "foobar " << 0x1234 << " and more");
-    }
-    catch(const Exception &e) {
-        ser << e << "\n";
-    }
-
-    ser << "'" << fmt(0x1234U, "#x", 10) << "' '" << fmt(0xFFFFU, "-b", 20) << "'\n";
-    ser << fmt<unsigned>(0x1234, "#x") << "\n";
-
-    BitField<128> bf;
-    bf.set(3), bf.set(12), bf.set(14);
-    ser << bf << "\n";
-
-    char mystr[32];
-    OStringStream(mystr, sizeof(mystr)) << "foobar";
-    ser << mystr << "\n";
-
-    DMADescList<3> dma;
-    dma.push(DMADesc(10, 20));
-    dma.push(DMADesc(1010, 220));
-    ser << dma << "\n";
-
-    MaskField<8> mask(32);
-    mask.set(3, 0x4);
-    mask.set(1, 0x1);
-    mask.set(2, 0xF);
-    ser << mask << "\n";
-
-    Util::write_dump(ser, &dma, 32);
-    Util::write_backtrace(ser);
-
-    UtcbFrame uf;
-    uf << 1 << 2 << 3UL;
-    uf.delegate(1,2);
-    ser << uf << "\n";
-
-    UtcbExcFrameRef euf;
-    ser << euf;
-
-    timer = new TimerSession("timer");
-    //tick_thread(nullptr);
-#endif
-
-#if 0
-    char title[64];
-    Console::ModeInfo info;
-    OStringStream(title, sizeof(title)) << "Test-" << 1;
-    ConsoleSession *conssess = new ConsoleSession("console", 1, title, 0, 1024 * 1024);
-    memset(&info, 0, sizeof(info));
-    for(size_t idx = 0; ; ++idx) {
-        if(!conssess->get_mode_info(idx, info))
-            break;
-        ser << "Mode " << idx << ": " << info.resolution[0] << "x" << info.resolution[1] << "\n";
-    }
-
-    int i = 0;
-    while(1) {
-        switch(i++ % 2) {
-            case 0:
-                conssess->set_mode(7, 1024 * 1024 * 4);
-                memset((void*)conssess->screen().virt() + 640 * 3, 0xFF, 10000);
-                break;
-            case 1:
-                conssess->set_mode(0, 4 * 1024 * 32);
-                VGAStream cs(*conssess, 0);
-                cs << "\nFoobar und mehr\n";
-                break;
-        }
-        while(1) {
-            Console::ReceivePacket pk = conssess->receive();
-            if((pk.flags & Keyboard::RELEASE) && pk.keycode == Keyboard::VK_N)
-                break;
-        }
-    }
-
-    Sm sm(0);
-    sm.down();
-#endif
-
-#if 1
-    for(CPU::iterator it = CPU::begin(); it != CPU::end(); ++it) {
-        Reference<GlobalThread> gt = GlobalThread::create(view0, it->log_id(), "test-thread");
-        gt->set_tls<size_t>(Thread::TLS_PARAM, 1 + it->log_id());
-        gt->start();
-    }
-
-    // wait until all are finished
-    GlobalThread::join_all();
-#endif
-
-    /*
-    {
-        timercon = new Connection("timer");
-        timer = new TimerSession(*timercon);
-        for(CPU::iterator it = CPU::begin(); it != CPU::end(); ++it) {
-            Sc *sc = new Sc(new GlobalThread(tick_thread,it->log_id()),Qpd());
-            sc->start();
-        }
-    }
-
-    for(int i = 0; i < 2; ++i) {
-        Connection *con = new Connection("console");
-        Info *info = new Info();
-        info->sess = new ConsoleSession(*con);
-        info->no = i;
-        Sc *sc1 = new Sc(new GlobalThread(reader,CPU::current().id),Qpd());
-        sc1->ec()->set_tls(Thread::TLS_PARAM,info);
-        sc1->start();
-        Sc *sc2 = new Sc(new GlobalThread(writer,CPU::current().id),Qpd());
-        sc2->ec()->set_tls(Thread::TLS_PARAM,info);
-        sc2->start();
-    }
-
-    {
-        Connection con("keyboard");
-        KeyboardSession kb(con);
-        Keyboard::keycode_t kc = 0;
-        while(kc != Keyboard::VK_ESC) {
-            Keyboard::Packet *data = kb.consumer().get();
-            Serial::get().writef("Got sc=%#x kc=%#x, flags=%#x\n",data->scancode,data->keycode,data->flags);
-            kc = data->keycode;
-            kb.consumer().next();
-        }
-    }
-
-    {
-        Connection con("mouse");
-        MouseSession ms(con);
-        while(1) {
-            Mouse::Packet *data = ms.consumer().get();
-            Serial::get().writef("Got status=%#x (%u,%u,%u)\n",data->status,data->x,data->y,data->z);
-            ms.consumer().next();
-        }
-    }
-    */
-
-    /*
-    {
-        Gsi kb(1);
-        for(int i = 0; i < 10; ++i) {
-            kb.down();
-            Serial::get().writef("Got keyboard interrupt\n");
-        }
-    }
-
-    con = new Connection("screen");
-
-    for(CPU::iterator it = CPU::begin(); it != CPU::end(); ++it) {
-        //new Sc(new GlobalThread(write,it->id()),Qpd());
-        Sc *sc = new Sc(new GlobalThread(read,it->id),Qpd());
-        sc->start();
-    }*/
-    return 0;
+//   Reference<LocalThread> ec = LocalThread::create(CPU::current().log_id());
+//   Pt pt(ec, dummy);
+  
+  Sm sm(0);
+  sm.down();
+  return 0;
 }

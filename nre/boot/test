@@ -11,4 +11,3 @@ bin/apps/timer provides=timer
 bin/apps/console provides=console
 bin/apps/sysinfo
 bin/apps/test
-bin/apps/sub mods=all
